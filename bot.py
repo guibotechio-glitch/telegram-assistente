@@ -1,9 +1,15 @@
 import os
 import sqlite3
-import time
+import asyncio
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -41,11 +47,10 @@ conn.commit()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Olá! Sou seu assistente.\n\n"
-        "Comandos:\n"
-        "Lembrete: me lembra 09/01/2026 12:00 marcar médico\n"
-        "Nota: anotar senha do portão 4589\n"
-        "Tarefa: tarefa comprar remédio\n"
-        "Listar: minhas tarefas, minhas notas"
+        "Exemplos:\n"
+        "me lembra 09/01/2026 12:00 marcar médico\n"
+        "anotar senha do portão 4589\n"
+        "tarefa comprar remédio"
     )
 
 
@@ -91,19 +96,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "minhas tarefas" in text:
         cursor.execute("SELECT text FROM tasks WHERE chat_id=?", (chat_id,))
         tasks = cursor.fetchall()
-        if tasks:
-            msg = "\n".join([f"- {t[0]}" for t in tasks])
-        else:
-            msg = "Nenhuma tarefa."
+        msg = "\n".join([f"- {t[0]}" for t in tasks]) if tasks else "Nenhuma tarefa."
         await update.message.reply_text(msg)
 
     elif "minhas notas" in text:
         cursor.execute("SELECT text FROM notes WHERE chat_id=?", (chat_id,))
         notes = cursor.fetchall()
-        if notes:
-            msg = "\n".join([f"- {n[0]}" for n in notes])
-        else:
-            msg = "Nenhuma nota."
+        msg = "\n".join([f"- {n[0]}" for n in notes]) if notes else "Nenhuma nota."
         await update.message.reply_text(msg)
 
 
@@ -122,7 +121,7 @@ async def reminder_loop(app):
             cursor.execute("DELETE FROM reminders WHERE id=?", (reminder_id,))
             conn.commit()
 
-        time.sleep(30)
+        await asyncio.sleep(30)
 
 
 async def main():
@@ -131,11 +130,10 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
-    app.job_queue.run_repeating(lambda ctx: reminder_loop(app), interval=30)
+    asyncio.create_task(reminder_loop(app))
 
     await app.run_polling()
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
