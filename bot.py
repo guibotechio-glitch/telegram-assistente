@@ -1,18 +1,25 @@
 import os
 import sqlite3
-import asyncio
 from datetime import datetime
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
-    filters,
 )
 
+# =========================
+# CONFIGURAÇÕES
+# =========================
 TOKEN = os.getenv("BOT_TOKEN")
 
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN não configurado nas variáveis de ambiente")
+
+# =========================
+# BANCO DE DADOS
+# =========================
 conn = sqlite3.connect("data.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -43,97 +50,125 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 conn.commit()
 
-
+# =========================
+# COMANDOS
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Olá! Sou seu assistente.\n\n"
-        "Exemplos:\n"
-        "me lembra 09/01/2026 12:00 marcar médico\n"
-        "anotar senha do portão 4589\n"
-        "tarefa comprar remédio"
+        "Olá 👋 Eu sou seu assistente pessoal.\n\n"
+        "Comandos disponíveis:\n"
+        "/lembrete <DD/MM/AAAA HH:MM> <texto>\n"
+        "/lembretes\n"
+        "/nota <texto>\n"
+        "/tarefas"
     )
 
+async def add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("Use: /nota <texto>")
+        return
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    chat_id = update.message.chat_id
+    cursor.execute(
+        "INSERT INTO notes (chat_id, text) VALUES (?, ?)",
+        (update.effective_chat.id, text),
+    )
+    conn.commit()
+    await update.message.reply_text("📝 Nota salva!")
 
-    if "me lembra" in text:
-        try:
-            parts = text.split("me lembra")[1].strip()
-            date_part, time_part, *msg = parts.split()
-            remind_text = " ".join(msg)
-            remind_time = f"{date_part} {time_part}"
+async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("Use: /tarefa <texto>")
+        return
 
-            cursor.execute(
-                "INSERT INTO reminders (chat_id, text, remind_time) VALUES (?, ?, ?)",
-                (chat_id, remind_text, remind_time),
-            )
-            conn.commit()
+    cursor.execute(
+        "INSERT INTO tasks (chat_id, text) VALUES (?, ?)",
+        (update.effective_chat.id, text),
+    )
+    conn.commit()
+    await update.message.reply_text("✅ Tarefa adicionada!")
 
-            await update.message.reply_text("⏰ Lembrete salvo.")
-        except:
-            await update.message.reply_text("Formato inválido.")
+async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute(
+        "SELECT text FROM tasks WHERE chat_id = ?",
+        (update.effective_chat.id,),
+    )
+    rows = cursor.fetchall()
 
-    elif text.startswith("anotar"):
-        note = text.replace("anotar", "").strip()
-        cursor.execute(
-            "INSERT INTO notes (chat_id, text) VALUES (?, ?)",
-            (chat_id, note),
+    if not rows:
+        await update.message.reply_text("Nenhuma tarefa cadastrada.")
+        return
+
+    msg = "📋 Suas tarefas:\n"
+    for i, row in enumerate(rows, start=1):
+        msg += f"{i}. {row[0]}\n"
+
+    await update.message.reply_text(msg)
+
+async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Use: /lembrete DD/MM/AAAA HH:MM <texto>"
         )
-        conn.commit()
-        await update.message.reply_text("📝 Nota salva.")
+        return
 
-    elif text.startswith("tarefa"):
-        task = text.replace("tarefa", "").strip()
-        cursor.execute(
-            "INSERT INTO tasks (chat_id, text) VALUES (?, ?)",
-            (chat_id, task),
+    date_str = context.args[0]
+    time_str = context.args[1]
+    text = " ".join(context.args[2:])
+
+    try:
+        remind_time = datetime.strptime(
+            f"{date_str} {time_str}", "%d/%m/%Y %H:%M"
         )
-        conn.commit()
-        await update.message.reply_text("✅ Tarefa adicionada.")
+    except ValueError:
+        await update.message.reply_text("Formato de data inválido.")
+        return
 
-    elif "minhas tarefas" in text:
-        cursor.execute("SELECT text FROM tasks WHERE chat_id=?", (chat_id,))
-        tasks = cursor.fetchall()
-        msg = "\n".join([f"- {t[0]}" for t in tasks]) if tasks else "Nenhuma tarefa."
-        await update.message.reply_text(msg)
+    cursor.execute(
+        "INSERT INTO reminders (chat_id, text, remind_time) VALUES (?, ?, ?)",
+        (
+            update.effective_chat.id,
+            text,
+            remind_time.isoformat(),
+        ),
+    )
+    conn.commit()
 
-    elif "minhas notas" in text:
-        cursor.execute("SELECT text FROM notes WHERE chat_id=?", (chat_id,))
-        notes = cursor.fetchall()
-        msg = "\n".join([f"- {n[0]}" for n in notes]) if notes else "Nenhuma nota."
-        await update.message.reply_text(msg)
+    await update.message.reply_text("⏰ Lembrete criado com sucesso!")
 
+async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute(
+        "SELECT text, remind_time FROM reminders WHERE chat_id = ?",
+        (update.effective_chat.id,),
+    )
+    rows = cursor.fetchall()
 
-async def reminder_loop(app):
-    while True:
-        now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        cursor.execute(
-            "SELECT id, chat_id, text FROM reminders WHERE remind_time=?",
-            (now,),
-        )
-        rows = cursor.fetchall()
+    if not rows:
+        await update.message.reply_text("Nenhum lembrete cadastrado.")
+        return
 
-        for row in rows:
-            reminder_id, chat_id, text = row
-            await app.bot.send_message(chat_id, f"⏰ Lembrete: {text}")
-            cursor.execute("DELETE FROM reminders WHERE id=?", (reminder_id,))
-            conn.commit()
+    msg = "⏰ Seus lembretes:\n"
+    for text, time in rows:
+        dt = datetime.fromisoformat(time)
+        msg += f"- {dt.strftime('%d/%m/%Y %H:%M')} → {text}\n"
 
-        await asyncio.sleep(30)
+    await update.message.reply_text(msg)
 
-
-async def main():
+# =========================
+# MAIN
+# =========================
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    app.add_handler(CommandHandler("nota", add_note))
+    app.add_handler(CommandHandler("tarefa", add_task))
+    app.add_handler(CommandHandler("tarefas", list_tasks))
+    app.add_handler(CommandHandler("lembrete", add_reminder))
+    app.add_handler(CommandHandler("lembretes", list_reminders))
 
-    asyncio.create_task(reminder_loop(app))
-
-    await app.run_polling()
-
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
